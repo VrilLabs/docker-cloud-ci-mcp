@@ -1,0 +1,33 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# The persistent disk needs a paid instance type; job records and request de-duplication live on it.
+services:
+  - type: web
+    name: docker-ci-bridge
+    runtime: node
+    plan: starter
+    numInstances: 1
+    buildCommand: npm ci --omit=dev
+    startCommand: node server.mjs
+    healthCheckPath: /healthz
+    disk:
+      name: bridge-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: BRIDGE_API_KEY
+        generateValue: true
+      - key: DOCKER_ID
+        sync: false
+      - key: DOCKER_PAT
+        sync: false
+      - key: PROJECTS_JSON
+        sync: false
+      # Leave empty until the budget guard is set up (README "Budget guard"); real builds are refused without it.
+      - key: BUDGET_JSON
+        sync: false
+      - key: DATA_DIR
+        value: /var/data
+      - key: HOST
+        value: 0.0.0.0
+      - key: NODE_VERSION
+        value: "22"

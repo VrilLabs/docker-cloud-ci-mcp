@@ -1,0 +1,37 @@
+# Fly.io: fly launch --copy-config --no-deploy --name <your-app>
+# then:   fly volumes create bridge_data --size 1 --region iad
+#         fly secrets import < .env.fly   (BRIDGE_API_KEY, MOCK_DOCKER, DOCKER_ID, DOCKER_PAT, PROJECTS_JSON, BUDGET_JSON)
+#         fly deploy --ha=false
+# Run exactly one machine: builds run in-process and job records live on its volume.
+primary_region = "iad"
+
+[build]
+  dockerfile = "deploy/fly.Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  DATA_DIR = "/data"
+
+[[mounts]]
+  source = "bridge_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Stopping the machine would kill in-flight builds.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

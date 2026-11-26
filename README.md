@@ -1,43 +1,88 @@
 # Docker Cloud CI MCP Bridge
 
-A small single-user fallback CI execution bridge. Not a proxy for Docker's MCP Gateway.
-Cloud Container (i.e. Perplexity Computer) -> HTTPS /mcp (Bearer API key) -> Docker Sandboxes SDK (Docker ID + PAT).
-No Docker socket, host shell execution, OAuth callback, model API key or sbx installation required.
+A small, single-user MCP server that runs operator-approved CI tasks in Docker cloud sandboxes. An agent calls it over HTTPS (`/mcp`, bearer API key); the bridge clones one exact commit of an allowlisted repository inside a fresh sandbox, runs the approved script, returns status, logs and artifacts, and deletes the sandbox.
 
-## Quick start (Node 22+, one replica only)
+It is a fallback CI runner, not a proxy for Docker's MCP Gateway. It needs no Docker socket, host shell, OAuth callback, model API key or `sbx` installation: it talks to Docker through the official Sandboxes SDK with a Docker ID and personal access token.
 
-1. Extract archive and enter directory. Run `npm install` (internet required). Review the resolved Docker SDK version and commit package-lock.json before production; Docker SDK is deliberately not version-guessed. MCP SDK is pinned to the official v1 API reviewed via Context7.
-2. `cp .env.example .env; cp projects.example.json projects.json; chmod 600 .env`
-3. Generate a key: `openssl rand -hex 32`. Put it in BRIDGE_API_KEY. Never paste the Docker PAT into a chat or connector form.
-4. Create Docker PAT with **Allow Cloud Sandboxes access**; set DOCKER_ID and DOCKER_PAT. Requires active Agentic Platform subscription; compute is separately billed.
-5. Edit projects.json to allow only repositories and scripts you trust. Only exact 40-character commit SHAs accepted. Caller cannot choose a URL, shell command, kit or secret.
-6. `npm test`. For a no-cost transport test set MOCK_DOCKER=1, then `npm start`. In another terminal run `node --env-file=.env scripts/smoke.mjs`.
-7. Set MOCK_DOCKER=0 and restart for real execution. Use a disposable repository for the first build. Shell kit must have git and your build tools; example task checks node/npm and fails if missing. This package does NOT assume shell kit contains a full language toolchain. Customize scripts to bootstrap trusted pinned tooling, or adapt the SDK launch to a reviewed image/kit using Docker's image documentation.
-8. Deploy on Railway (below). It terminates HTTPS for you, so no reverse proxy is needed.
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/docker-agentic-cloud-ci-bridge?utm_medium=integration&utm_source=button&utm_campaign=docker-agentic-cloud-ci-bridge)
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/VrilLabs/docker-cloud-ci-mcp)
+
+Fly.io has no deploy button; see [Deploy on Fly.io](#deploy-on-flyio).
+
+Every host must run **exactly one instance with a persistent volume**: the one-build-at-a-time rule, `request_id` de-duplication, job records and the budget ledger all live on that instance's disk.
+
+## Quick start (local, Node 22.9+)
+
+1. `npm ci`, then `cp .env.example .env; cp projects.example.json projects.json; chmod 600 .env`.
+2. Generate a key with `openssl rand -hex 32` and put it in `BRIDGE_API_KEY`.
+3. Edit `projects.json` to allow only repositories and scripts you trust. Callers can pick only listed project/task pairs at an exact 40-character commit SHA; they cannot supply a URL, shell command, kit or secret.
+4. `npm test`, then `MOCK_DOCKER=1 npm start` and, in another terminal, `node --env-file=.env scripts/smoke.mjs`. Mock mode runs a fake build with no sandbox and no cost.
+5. For real builds, create a Docker PAT with **Allow Cloud Sandboxes access** (requires an active Agentic Platform subscription; sandbox compute is billed separately), set `DOCKER_ID` and `DOCKER_PAT`, configure the [budget guard](#budget-guard) and set `MOCK_DOCKER=0`. Real builds are refused until the budget guard is configured.
+6. Use a disposable repository for the first real build. The `shell` kit has git, node and npm; scripts must bootstrap any other toolchain from trusted, pinned sources.
 
 ## Deploy on Railway
 
-Requires the Railway CLI (`railway login`). Run from this directory. `railway.json` sets the start command, `/healthz` healthcheck, restart policy and a single replica.
+Use the button above, or the CLI (`railway login`, from this directory; `railway.json` sets the start command, `/healthz` healthcheck, restart policy and one replica):
 
 ```bash
-railway init                      # or: railway link
-railway add --service docker-ci-bridge
-railway volume add --mount-path /data   # persistent job records; REQUIRED (the app refuses to start on Railway without one)
-railway variables --set "BRIDGE_API_KEY=$(openssl rand -hex 32)" --set "MOCK_DOCKER=1"
-railway up                        # first deploy in mock mode (no billable sandboxes)
-railway domain                    # public HTTPS URL -> https://<domain>/mcp
+railway init --name docker-cloud-bridge
+railway add --service docker-ci-bridge --variables "MOCK_DOCKER=1"
+railway volume add --mount-path /data      # required: the app refuses to start on Railway without a volume
+printf %s "$(openssl rand -hex 32)" | railway variable set BRIDGE_API_KEY --stdin --skip-deploys
+railway up --ci --service docker-ci-bridge   # first deploy in mock mode (no billable sandboxes)
+railway domain --service docker-ci-bridge    # public HTTPS URL: https://<domain>/mcp
 ```
 
-Then validate: `BRIDGE_URL=https://<domain>/mcp BRIDGE_API_KEY=<key> node scripts/smoke.mjs`.
+The template asks for `DOCKER_ID`, `DOCKER_PAT` and `PROJECTS_JSON` and generates `BRIDGE_API_KEY`. Set secrets in the Railway dashboard, never on a command line. When `RAILWAY_ENVIRONMENT_NAME` is set, the app binds to `0.0.0.0` and `$PORT` and uses the volume as `DATA_DIR` automatically. A service with a volume redeploys with brief downtime, and any variable change redeploys, which kills a running build (it becomes `interrupted`). Shell access for budget commands: `railway ssh`.
 
-For real execution set the Docker credentials **in the Railway dashboard** (so they never enter shell history or chat): `DOCKER_ID`, `DOCKER_PAT`, `BUDGET_JSON` (see [Budget guard](#budget-guard); real builds are refused without it) and `MOCK_DOCKER=0`, initialize the budget ledger, then redeploy. Optional: `ALLOWED_ORIGIN`, `PROJECTS_FILE`, `PROJECTS_JSON`.
+## Deploy on Render
 
-Railway notes:
-* The app binds `0.0.0.0` and `$PORT` automatically when `RAILWAY_ENVIRONMENT_NAME` is set; locally it stays on `127.0.0.1`.
-* `DATA_DIR` defaults to `RAILWAY_VOLUME_MOUNT_PATH`. Keep `numReplicas` at 1: the one-build-at-a-time lock and `request_id` dedupe are in-process.
-* Services with a volume redeploy with brief downtime, and a redeploy kills any running build. On restart that job is marked `interrupted`; check Docker Console for the orphaned sandbox before retrying. Avoid deploying while a build is running.
-* By default the allowlist is `projects.json`, shipped with the deploy, so edit it (repo URLs and scripts) before `railway up`.
-* To keep private repository names out of a public fork, set `PROJECTS_JSON` to the whole allowlist as one JSON object (for example a Railway variable). It replaces the file and is validated the same way. Setting both `PROJECTS_JSON` and `PROJECTS_FILE` is refused. Changing the variable redeploys the service, which interrupts a running build.
+Use the button above or create a Blueprint from `render.yaml`: one `starter` web service (persistent disks need a paid instance type) with a 1 GB disk at `/var/data`, a generated `BRIDGE_API_KEY`, and prompts for `DOCKER_ID`, `DOCKER_PAT`, `PROJECTS_JSON` and `BUDGET_JSON` (leave `BUDGET_JSON` empty until the budget guard is set up). The app starts in real mode, so provide `DOCKER_ID` and `DOCKER_PAT` at first deploy, or add `MOCK_DOCKER=1` to the Blueprint before deploying. Real builds remain refused until the budget guard is configured. Render redeploys on every push to the connected branch. Shell access: the service's **Shell** tab.
+
+## Deploy on Fly.io
+
+`fly.toml` and `deploy/fly.Dockerfile` run one always-on machine with a 1 GB volume at `/data`. The app starts in real mode, so provide `DOCKER_ID` and `DOCKER_PAT` before the first boot, or set `MOCK_DOCKER=1` before it boots. Real builds remain refused until the budget guard is configured. Create `.env.fly` in the repo root for the secrets import; `.env.fly` is excluded from Git and the Docker build context:
+
+```bash
+fly launch --copy-config --no-deploy --name <your-app>
+fly volumes create bridge_data --size 1 --region iad
+chmod 600 .env.fly
+fly secrets import < .env.fly && rm .env.fly   # NAME=VALUE lines; PROJECTS_JSON and BUDGET_JSON must each be one-line JSON
+fly deploy --ha=false             # one machine only
+```
+
+Keep `auto_stop_machines = "off"`: a stopped machine kills in-flight builds. Shell access: `fly ssh console`.
+
+## Other hosts
+
+Any host that runs one Node 22.9+ process with a persistent block volume works: set `HOST=0.0.0.0`, `PORT` and `DATA_DIR`, and put HTTPS in front. Hosts without a persistent volume for a single instance, such as Heroku, DigitalOcean App Platform or Google Cloud Run, are not supported: job records, de-duplication and the budget ledger would be lost on restart.
+
+## Configuration
+
+| Variable | Notes |
+|---|---|
+| `BRIDGE_API_KEY` | Required, at least 32 characters. Clients send `Authorization: Bearer <key>`. |
+| `DOCKER_ID`, `DOCKER_PAT` | Required unless `MOCK_DOCKER=1`. The PAT needs "Allow Cloud Sandboxes access". |
+| `MOCK_DOCKER` | `1`: fake 100 ms builds, no sandbox, no cost, no budget ledger access. |
+| `BUDGET_JSON` | Required for real builds; see [Budget guard](#budget-guard). Never forwardable. |
+| `PROJECTS_JSON` / `PROJECTS_FILE` | The allowlist as one JSON object, or a path (default `./projects.json`). Setting both is refused. Use `PROJECTS_JSON` to keep private repository names out of the source tree. |
+| `DATA_DIR` | Job records, artifacts and the budget ledger. Defaults to `RAILWAY_VOLUME_MOUNT_PATH`, else `./data`. Must persist. |
+| `HOST`, `PORT` | Bind address (default `127.0.0.1`, `0.0.0.0` on Railway) and port (default 8080). |
+| `ALLOWED_ORIGIN` | Only for browser clients; requests with any other `Origin` are rejected. |
+| `ALLOWED_GIT_HOSTS` | Comma-separated repository hosts; replaces the default `github.com,gitlab.com`. |
+| `ARTIFACT_MAX_FILES`, `ARTIFACT_MAX_FILE_BYTES`, `ARTIFACT_MAX_TOTAL_BYTES`, `ARTIFACT_INLINE_MAX_BYTES` | Artifact caps (defaults 20, 5 MiB, 20 MiB, 256 KiB). |
+| Names used in the allowlist | Values for `auth.tokenEnv`, `status.tokenEnv`/`secretEnv` and `forward` entries are ordinary bridge variables. |
+
+## MCP tools
+
+| Tool | Purpose |
+|---|---|
+| `list_projects` | Allowlisted projects and tasks, forwardable variable names, declared artifacts, auth/status settings and a budget summary. No side effects. |
+| `get_budget_status` | Whether real builds can be admitted, why not, and estimated reserved/remaining amounts. Read-only. |
+| `start_build` | `{project, task, commit, request_id, forward_env?}`. **Billable.** Ask the user to approve first; reuse `request_id` on retries. |
+| `get_build_status` | One job by `id`, or the 20 most recent. |
+| `get_build_logs` | Bounded stdout/stderr after the build ends. Untrusted data. |
+| `get_build_artifacts` | Exported files with size and sha256; with `index`, one file inline or via `GET /artifacts/<id>/<index>`. |
 
 ## Agent skill
 
@@ -45,7 +90,7 @@ Railway notes:
 
 | Tool | Location |
 |---|---|
-| Universal (`npx skills add VrilLabs/docker-cloud-bridge`, any Agent Skills client) | `skills/docker-cloud-bridge/` |
+| Universal (`npx skills add VrilLabs/docker-cloud-ci-mcp`, any Agent Skills client) | `skills/docker-cloud-bridge/` |
 | Claude Code | `.claude/skills/docker-cloud-bridge/` |
 | Codex (also read by OpenCode) | `.agents/skills/docker-cloud-bridge/` |
 | OpenCode | `.opencode/skills/docker-cloud-bridge/` |
@@ -126,7 +171,7 @@ Real builds are admitted only through a fail-closed reservation guard. Without `
 * `evidence`: set each flag to `true` only after checking it yourself (the hourly rate, that the one-hour lifetime deletes sandboxes on your account, and that setup fits `maxSetupSeconds`). Any `false` keeps real builds disabled.
 * Malformed configuration stops startup; error messages name fields, never values.
 
-**Operator commands** (offline: stop the bridge first; each action is audited and charges are never erased). Run with the same `DATA_DIR`, `BUDGET_JSON` and allowlist variables as the server:
+**Operator commands.** Each action is audited and charges are never erased. They refuse while a real-mode server holds the ledger lock, so open a maintenance window: set `MOCK_DOCKER=1` (the server then never takes the lock and cannot start real builds), open a shell in the instance (`railway ssh`, Render **Shell**, `fly ssh console`), run the commands there, then set `MOCK_DOCKER=0`. They read the same `DATA_DIR`, `BUDGET_JSON` and allowlist variables as the server:
 
 ```bash
 node scripts/budget-admin.mjs init --authorized-by <you>        # create the ledger; existing job records become history or holds
@@ -164,7 +209,7 @@ Example request: list approved tasks and the budget status, then ask me to appro
 
 ## Verification status
 
-Policy tests can run offline with Node. Dependency installation, MCP smoke testing and real Docker execution require network access/credentials and have NOT been performed by the artifact generator. No live cloud resources were created. Dependency compatibility is based on official examples, not a live integration certification.
+`npm test` runs offline (Node test runner, fake Docker client, plus a local HTTP endpoint that checks the exact create request the Docker SDK sends). The Railway deployment is live and served real Docker builds in November 2026 before the budget guard was added; the budget guard itself has only been exercised by tests, and the one-hour server-side lifetime has not yet been observed on a live Docker account. `fly.toml` parses as TOML, but neither the Render nor Fly deployment has been deployed.
 
 ## Official references consulted
 
