@@ -127,6 +127,8 @@ test('loadProjects: PROJECTS_JSON overrides the file; ambiguous, malformed or no
   await assert.rejects(loadProjects({ PROJECTS_JSON: '{}', PROJECTS_FILE: 'p.json' }, read), /not both/);
   await assert.rejects(loadProjects({ PROJECTS_JSON: '{nope' }, read), /PROJECTS_JSON is not valid JSON/);
   for (const bad of ['null', '[]', '"x"', '3']) await assert.rejects(loadProjects({ PROJECTS_JSON: bad }, read), /JSON object/, bad);
-  await assert.rejects(loadProjects({}, async () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); }), /Cannot load projects\.json: ENOENT/);
-  await assert.rejects(loadProjects({}, async () => 'not json'), /Cannot load projects\.json/);
+  await assert.rejects(loadProjects({}, async () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); }), /Cannot read projects\.json: ENOENT/);
+  await assert.rejects(loadProjects({}, async () => { throw new Error('SECRET_MARKER'); }), e => /Cannot read projects\.json: read failed/.test(e.message) && !e.message.includes('SECRET_MARKER'));
+  for (const env of [{}, { PROJECTS_JSON: '{"SECRET_MARKER":undefined}' }])
+    await assert.rejects(loadProjects(env, async () => '{"SECRET_MARKER":undefined}'), e => /not valid JSON/.test(e.message) && !e.message.includes('SECRET_MARKER'), JSON.stringify(env));
 });

@@ -47,7 +47,10 @@ export async function loadProjects(env = process.env, read = path => readFile(pa
     try { config = JSON.parse(inline); } catch { throw new Error('PROJECTS_JSON is not valid JSON'); }
   } else {
     const file = env.PROJECTS_FILE || 'projects.json';
-    try { config = JSON.parse(await read(file)); } catch (e) { throw new Error(`Cannot load ${file}: ${e.code ?? e.message}`); }
+    let text;
+    try { text = await read(file); } catch (e) { throw new Error(`Cannot read ${file}: ${e.code ?? 'read failed'}`); }
+    // Parser messages can quote the input, so they are never surfaced.
+    try { config = JSON.parse(text); } catch { throw new Error(`${file} is not valid JSON`); }
   }
   if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('Projects config must be a JSON object keyed by project name');
   return config;
