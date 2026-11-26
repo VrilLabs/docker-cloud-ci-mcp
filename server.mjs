@@ -6,7 +6,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import { authorized, describeAuth, resolveJob } from './policy.mjs';
-import { normalizeTask, prepareRun, reservedNames, validateConfig } from './config.mjs';
+import { loadProjects, normalizeTask, prepareRun, reservedNames, validateConfig } from './config.mjs';
 import { loadArtifact } from './artifacts.mjs';
 import { createRunner, purgeOrphanSecrets } from './runner.mjs';
 
@@ -14,7 +14,7 @@ const key = process.env.BRIDGE_API_KEY;
 if (!key || key.length < 32) throw new Error('BRIDGE_API_KEY must have at least 32 characters');
 const mock = process.env.MOCK_DOCKER === '1';
 if (!mock && (!process.env.DOCKER_ID || !process.env.DOCKER_PAT)) throw new Error('Set DOCKER_ID and DOCKER_PAT');
-const config = JSON.parse(await readFile(process.env.PROJECTS_FILE || 'projects.json', 'utf8'));
+const config = await loadProjects(process.env);
 validateConfig(config, process.env); // fail fast with every problem listed, before serving anything
 const reserved = reservedNames(config);
 

@@ -83,6 +83,7 @@ Environment variables:
 | `MOCK_DOCKER` | `1` runs a fake 100 ms build with no sandbox and no cost. Use it to test transport and deploys. |
 | `DATA_DIR` | Job records. Defaults to `RAILWAY_VOLUME_MOUNT_PATH`, else `./data`. Must persist across restarts. |
 | `PROJECTS_FILE`, `PORT`, `HOST` | Allowlist path, port (default 8080), bind address. On Railway the host defaults to `0.0.0.0`. |
+| `PROJECTS_JSON` | Whole allowlist as one JSON object, replacing the file; keeps private repos out of the source tree. Refused together with `PROJECTS_FILE`. |
 | `ALLOWED_ORIGIN` | Only needed for browser clients; non-browser MCP clients send no `Origin`. |
 | `ALLOWED_GIT_HOSTS` | Comma-separated repo hosts. Default `github.com,gitlab.com`; setting it replaces the default. |
 | `ARTIFACT_MAX_FILES`, `ARTIFACT_MAX_FILE_BYTES`, `ARTIFACT_MAX_TOTAL_BYTES`, `ARTIFACT_INLINE_MAX_BYTES` | Artifact caps (defaults 20, 5 MiB, 20 MiB, 256 KiB). |

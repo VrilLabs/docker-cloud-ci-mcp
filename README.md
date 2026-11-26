@@ -30,13 +30,14 @@ railway domain                    # public HTTPS URL -> https://<domain>/mcp
 
 Then validate: `BRIDGE_URL=https://<domain>/mcp BRIDGE_API_KEY=<key> node scripts/smoke.mjs`.
 
-For real execution set the Docker credentials **in the Railway dashboard** (so they never enter shell history or chat): `DOCKER_ID`, `DOCKER_PAT`, and `MOCK_DOCKER=0`, then redeploy. Optional: `ALLOWED_ORIGIN`, `PROJECTS_FILE`.
+For real execution set the Docker credentials **in the Railway dashboard** (so they never enter shell history or chat): `DOCKER_ID`, `DOCKER_PAT`, and `MOCK_DOCKER=0`, then redeploy. Optional: `ALLOWED_ORIGIN`, `PROJECTS_FILE`, `PROJECTS_JSON`.
 
 Railway notes:
 * The app binds `0.0.0.0` and `$PORT` automatically when `RAILWAY_ENVIRONMENT_NAME` is set; locally it stays on `127.0.0.1`.
 * `DATA_DIR` defaults to `RAILWAY_VOLUME_MOUNT_PATH`. Keep `numReplicas` at 1: the one-build-at-a-time lock and `request_id` dedupe are in-process.
 * Services with a volume redeploy with brief downtime, and a redeploy kills any running build. On restart that job is marked `interrupted`; check Docker Console for the orphaned sandbox before retrying. Avoid deploying while a build is running.
-* `projects.json` is committed and shipped with the deploy, so edit the allowlist (repo URLs and scripts) before `railway up`.
+* By default the allowlist is `projects.json`, shipped with the deploy, so edit it (repo URLs and scripts) before `railway up`.
+* To keep private repository names out of a public fork, set `PROJECTS_JSON` to the whole allowlist as one JSON object (for example a Railway variable). It replaces the file and is validated the same way. Setting both `PROJECTS_JSON` and `PROJECTS_FILE` is refused. Changing the variable redeploys the service, which interrupts a running build.
 
 ## Agent skill
 

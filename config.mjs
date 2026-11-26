@@ -1,6 +1,8 @@
 // Operator-side configuration rules. Everything an agent may influence (which env var NAMES to forward)
 // is checked against what the operator declared in projects.json; values only ever come from the bridge's environment.
 
+import { readFile } from 'node:fs/promises';
+
 const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/; // exact DNS name: no wildcard, IP literal or port
 const HEADER = /^[A-Za-z][A-Za-z0-9-]{0,63}$/;
@@ -34,6 +36,21 @@ export function safeArtifactPath(p) {
 export function normalizeTask(raw) {
   if (typeof raw === 'string') return { script: raw, forward: {}, artifacts: [] };
   return { script: raw?.script, forward: raw?.forward || {}, artifacts: raw?.artifacts || [] };
+}
+
+// PROJECTS_JSON keeps a deployment's allowlist out of the source tree, so a public checkout never names private repos.
+export async function loadProjects(env = process.env, read = path => readFile(path, 'utf8')) {
+  const inline = env.PROJECTS_JSON;
+  let config;
+  if (inline !== undefined && inline !== '') {
+    if (env.PROJECTS_FILE) throw new Error('Set PROJECTS_JSON or PROJECTS_FILE, not both');
+    try { config = JSON.parse(inline); } catch { throw new Error('PROJECTS_JSON is not valid JSON'); }
+  } else {
+    const file = env.PROJECTS_FILE || 'projects.json';
+    try { config = JSON.parse(await read(file)); } catch (e) { throw new Error(`Cannot load ${file}: ${e.code ?? e.message}`); }
+  }
+  if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('Projects config must be a JSON object keyed by project name');
+  return config;
 }
 
 export function reservedNames(config) {

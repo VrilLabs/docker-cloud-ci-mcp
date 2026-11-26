@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateConfig, normalizeTask, repoInfo, planForward, gitAuthSecret, safeArtifactPath, reservedNames } from '../config.mjs';
+import { validateConfig, normalizeTask, repoInfo, planForward, gitAuthSecret, safeArtifactPath, reservedNames, loadProjects } from '../config.mjs';
 
 const base = (over = {}) => ({
   app: { repo: 'https://github.com/example/app.git', tasks: { test: 'npm test' }, ...over },
@@ -109,4 +109,24 @@ test('credential env vars used by auth and status are never forwardable', () => 
   for (const n of ['BRIDGE_API_KEY', 'DOCKER_PAT', 'DOCKER_ID', 'GH_CLONE', 'HOOK_SECRET']) assert(names.has(n), n);
   const bad = base({ auth: { tokenEnv: 'GH_CLONE' }, tasks: { t: { script: 'x', forward: { GH_CLONE: { mode: 'env' } } } } });
   assert.match(problems(bad), /reserved/);
+});
+
+test('loadProjects: PROJECTS_JSON overrides the file; ambiguous, malformed or non-object config is refused', async () => {
+  const fileCfg = { app: { repo: 'https://github.com/example/app.git', tasks: { test: 'npm test' } } };
+  const inlineCfg = { other: { repo: 'https://gitlab.com/g/r.git', tasks: { t: 'make' } } };
+  const reads = [];
+  const read = async path => { reads.push(path); return JSON.stringify(fileCfg); };
+  assert.deepEqual(await loadProjects({}, read), fileCfg);
+  assert.deepEqual(reads, ['projects.json']);
+  assert.deepEqual(await loadProjects({ PROJECTS_FILE: '/etc/bridge/p.json' }, read), fileCfg);
+  assert.equal(reads.at(-1), '/etc/bridge/p.json');
+  reads.length = 0;
+  assert.deepEqual(await loadProjects({ PROJECTS_JSON: JSON.stringify(inlineCfg) }, read), inlineCfg);
+  assert.deepEqual(reads, [], 'the shipped file is not read when PROJECTS_JSON is set');
+  assert.deepEqual(await loadProjects({ PROJECTS_JSON: '' }, read), fileCfg, 'empty PROJECTS_JSON falls back to the file');
+  await assert.rejects(loadProjects({ PROJECTS_JSON: '{}', PROJECTS_FILE: 'p.json' }, read), /not both/);
+  await assert.rejects(loadProjects({ PROJECTS_JSON: '{nope' }, read), /PROJECTS_JSON is not valid JSON/);
+  for (const bad of ['null', '[]', '"x"', '3']) await assert.rejects(loadProjects({ PROJECTS_JSON: bad }, read), /JSON object/, bad);
+  await assert.rejects(loadProjects({}, async () => { throw Object.assign(new Error('gone'), { code: 'ENOENT' }); }), /Cannot load projects\.json: ENOENT/);
+  await assert.rejects(loadProjects({}, async () => 'not json'), /Cannot load projects\.json/);
 });
