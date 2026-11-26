@@ -30,7 +30,7 @@ railway domain                    # public HTTPS URL -> https://<domain>/mcp
 
 Then validate: `BRIDGE_URL=https://<domain>/mcp BRIDGE_API_KEY=<key> node scripts/smoke.mjs`.
 
-For real execution set the Docker credentials **in the Railway dashboard** (so they never enter shell history or chat): `DOCKER_ID`, `DOCKER_PAT`, and `MOCK_DOCKER=0`, then redeploy. Optional: `ALLOWED_ORIGIN`, `PROJECTS_FILE`, `PROJECTS_JSON`.
+For real execution set the Docker credentials **in the Railway dashboard** (so they never enter shell history or chat): `DOCKER_ID`, `DOCKER_PAT`, `BUDGET_JSON` (see [Budget guard](#budget-guard); real builds are refused without it) and `MOCK_DOCKER=0`, initialize the budget ledger, then redeploy. Optional: `ALLOWED_ORIGIN`, `PROJECTS_FILE`, `PROJECTS_JSON`.
 
 Railway notes:
 * The app binds `0.0.0.0` and `$PORT` automatically when `RAILWAY_ENVIRONMENT_NAME` is set; locally it stays on `127.0.0.1`.
@@ -97,6 +97,47 @@ A task may still be a plain string (the script), exactly as before.
 
 Config is validated at startup and the bridge refuses to start with a message listing every problem. In `MOCK_DOCKER=1` mode nothing is posted to forges.
 
+## Budget guard
+
+Real builds are admitted only through a fail-closed reservation guard. Without `BUDGET_JSON`, or with anything below unresolved, `start_build` refuses real builds; `MOCK_DOCKER=1` never touches the guard.
+
+**What it is.** A conservative estimate of what this bridge could have launched, kept in a ledger on the data volume. It is not a Docker account-wide cap and not an invoice: other Docker usage, taxes, price changes and platform failures are outside it. Every figure is labelled estimated/reserved, never billed.
+
+**How a build is charged.** Before Docker is called, the bridge reserves `ceil(rate × (launch timeout 120 s + maxSetupSeconds + lifetime 3600 s) / 3600)` micro-USD in every UTC month that window can touch, against the global and the project allowance (an exact fit is allowed). The sandbox is created with a server-side lifetime of one hour that deletes it on expiry (`onTimeout: delete`, auto-resume off) and with SDK retries disabled, so a create is sent once. Before any repository code runs, the bridge re-reads the sandbox and stops (deleting it) if its effective lifetime, expiry action or size differs. Reservations are never refunded, including for failed or aborted builds. Only one reserved build is open at a time.
+
+**Holds.** A build that ends with an uncertain create, a failed sandbox or secret deletion, a failed lifetime check, or a bridge restart mid-build becomes a hold. Any unresolved hold blocks all real builds until an operator reconciles it.
+
+**`BUDGET_JSON`** (operator-only; it can never be forwarded to a build). All amounts are integer micro-USD (1 USD = 1000000):
+
+```json
+{
+  "version": 1, "policyVersion": 1, "currency": "USD",
+  "smallHourlyRateMicroUsd": 500000,
+  "monthlyAllowanceMicroUsd": 10000000,
+  "projects": { "my-app": { "monthlyAllowanceMicroUsd": 5000000 } },
+  "opening": { "2026-11": { "globalMicroUsd": 0, "projects": { "my-app": 0 } } },
+  "maxSetupSeconds": 300, "ttlSeconds": 3600,
+  "evidence": { "rateVerified": true, "lifetimeVerified": true, "setupVerified": true, "reference": "where the operator checked these" }
+}
+```
+
+* `smallHourlyRateMicroUsd`: a conservative hourly price for the small sandbox (2 CPU, 4 GiB), from your Docker plan. The numbers above are placeholders, not Docker's prices.
+* `opening`: usage to count before the bridge's own reservations, per UTC month (earlier builds, other Docker use you want counted). A month with no opening entry admits nothing; there is no automatic reset to zero at a new month.
+* `evidence`: set each flag to `true` only after checking it yourself (the hourly rate, that the one-hour lifetime deletes sandboxes on your account, and that setup fits `maxSetupSeconds`). Any `false` keeps real builds disabled.
+* Malformed configuration stops startup; error messages name fields, never values.
+
+**Operator commands** (offline: stop the bridge first; each action is audited and charges are never erased). Run with the same `DATA_DIR`, `BUDGET_JSON` and allowlist variables as the server:
+
+```bash
+node scripts/budget-admin.mjs init --authorized-by <you>        # create the ledger; existing job records become history or holds
+node scripts/budget-admin.mjs status --authorized-by <you>
+node scripts/budget-admin.mjs policy --authorized-by <you>      # after editing BUDGET_JSON: bump policyVersion first
+node scripts/budget-admin.mjs reconcile --authorized-by <you> --hold <id> --evidence "<what you checked in Docker Console>"
+node scripts/budget-admin.mjs reconcile --authorized-by <you> --stale-lock --evidence "<why no bridge is running>"
+```
+
+`BUDGET_JSON` must match the ledger's latest policy version or real builds stay disabled, so every allowance change or new-month opening entry goes through `policy`. Keep one bridge instance per data volume: the ledger lock refuses a second one. Agents read the guard with `get_budget_status`; there is no MCP tool that resets or reconciles it.
+
 ## Connect Perplexity
 
 Plugins -> Add custom -> Add MCP connector -> Remote.
@@ -105,15 +146,15 @@ Transport: Streamable HTTP. Authentication: API Key, not OAuth.
 API key: BRIDGE_API_KEY. Server expects `Authorization: Bearer <key>`.
 The official Perplexity guide does not specify the API Key field's exact wire encoding. Validate this with smoke.mjs and connector setup; if your client sends a different standard authorization format, adjust the auth middleware deliberately, not by disabling auth. There is no arbitrary custom-header field in the connector form.
 
-Tools: list_projects, start_build, get_build_status, get_build_logs.
-Example request: list approved tasks, then ask me to approve a test of project my-app at exact commit SHA. Start only after approval, generate a UUID request_id, and poll status. Reuse the SAME request_id when retrying a timed-out start call. Read logs after completion.
+Tools: list_projects, get_budget_status, start_build, get_build_status, get_build_logs, get_build_artifacts.
+Example request: list approved tasks and the budget status, then ask me to approve a test of project my-app at exact commit SHA. Start only after approval, generate a UUID request_id, and poll status. Reuse the SAME request_id when retrying a timed-out start call. Read logs after completion.
 
 ## Behavior and limitations
 
 * Uses official SDK PAT exchange, shell kit launch, waitUntilRunning, processes.run, refresh/delete/waitUntilDeleted.
 * start_build returns a job ID immediately; poll status. Results and bounded tail logs persist in data/. Logs are collected on process completion, not live streamed. The SDK can buffer more output before truncation here; constrain noisy build output in your trusted script.
 * One active job, one process/replica. request_id deduplication retained on disk. No distributed lock or queue. Local disk must persist across restarts. Manually prune old job records when idle; there is no retention scheduler.
-* Process timeout is ten minutes; launch/wait timeouts two minutes each. Timeout is not a billing cap. Cleanup attempted in finally, including failed builds. SDK timeouts or a crash can orphan resources. On restart active records become interrupted; inspect Docker Console and delete orphans before retrying. A creation timeout can occur before the sandbox name reaches the bridge. Set account budget alerts and review Console resources. No claim of crash-safe cleanup or auto-expiry.
+* Process timeout is ten minutes; launch/wait timeouts two minutes each. These local timeouts do not stop billing. The bound is the sandbox's server-side lifetime of one hour with delete on expiry, requested on create and checked before the script runs; it has been checked against the SDK's request format, not against a live Docker account, so verify it on yours before setting `evidence.lifetimeVerified`. Cleanup is attempted in finally, including failed builds. SDK timeouts or a crash can still leave a sandbox (until it expires) or stored secrets; on restart active records become interrupted and holds, so inspect Docker Console before reconciling. A creation timeout can occur before the sandbox name reaches the bridge. Set account budget alerts and review Console resources.
 * Default SDK small compute: 2 CPUs/4 GiB. No network policy is configured by this implementation (Docker rejected inline network policies on the account used for verification; use Docker governance policies if you need egress control). Private repos, forwarded variables, artifacts and status reports are opt-in per project in `projects.json` (see the section above). Do not put PATs in repo URLs or scripts.
 * Default workflow is CI (test/build). No deployment/registry credentials, prod deploy, rollback, cancellations or automatic failover scheduler. Add a fixed allowlisted deployment task only after designing narrowly scoped credentials, independent approval enforcement and rollback. Exported artifacts accumulate on the volume (capped per build, no retention scheduler); prune `DATA_DIR/artifacts/` when idle.
 * Task execution is a billable, side-effecting operation, even for tests. Tool description instructs client to request approval, but does NOT provide a server-side human approval gate. Possession of bridge API key permits running ANY allowlisted task/commit. Use only trusted connector owners. Do not add production deployment credentials unless you implement an independent approval gate.

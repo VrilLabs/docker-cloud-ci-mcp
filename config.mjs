@@ -7,7 +7,7 @@ const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
 const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/; // exact DNS name: no wildcard, IP literal or port
 const HEADER = /^[A-Za-z][A-Za-z0-9-]{0,63}$/;
 const BLOCKED_HEADERS = new Set(['host', 'content-length', 'transfer-encoding', 'connection', 'upgrade', 'te', 'trailer', 'keep-alive', 'expect', 'cookie', 'set-cookie']);
-const BASE_RESERVED = ['BRIDGE_API_KEY', 'DOCKER_PAT', 'DOCKER_ID'];
+const BASE_RESERVED = ['BRIDGE_API_KEY', 'DOCKER_PAT', 'DOCKER_ID', 'BUDGET_JSON'];
 const MAX_VALUE_BYTES = 8192;
 const MAX_FORWARD = 16;
 const MAX_ARTIFACT_ENTRIES = 8;

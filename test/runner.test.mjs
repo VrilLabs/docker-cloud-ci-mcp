@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createRunner, purgeOrphanSecrets } from '../runner.mjs';
+import { LAUNCH_OPTIONS, createRunner, launchRequest, lifetimeProblem, purgeOrphanSecrets } from '../runner.mjs';
 import { prepareRun, reservedNames } from '../config.mjs';
 import { resolveJob } from '../policy.mjs';
 
@@ -33,6 +33,16 @@ const fakeDocker = (opts = {}) => {
   const log = { secrets: [], launched: [], runs: [], secretsDeleted: [], sandboxDeleted: 0 };
   const sandbox = {
     name: 'sandboxes/sbx1',
+    core: { resources: { cpus: 2, memoryMib: '4096' }, createdAt: new Date() },
+    effectiveFeatures: {
+      lifecycle: { autoResume: false },
+      timeouts: {
+        initialTimeout: '3600s',
+        expiresAt: new Date(Date.now() + 3600_000),
+        onTimeout: 'delete',
+        autoResume: false,
+      },
+    },
     waitUntilRunning: async () => sandbox,
     processes: { run: async spec => { log.runs.push(spec); return opts.run ? opts.run(spec) : { exitCode: 0, stdout: 'ok', stderr: '' }; } },
     files: { read: async () => new TextEncoder().encode('artifact-bytes') },
@@ -182,6 +192,60 @@ test('status failures never fail the build and are recorded', async () => {
   await runner.execute(job, spec, plan);
   assert.equal(job.status, 'passed');
   assert(job.statusReports.every(r => r.ok === false && r.httpStatus === 403));
+});
+
+const goodSandbox = (now = Date.now()) => ({
+  core: { resources: { cpus: 2, memoryMib: '4096' } },
+  effectiveFeatures: { lifecycle: { autoResume: false }, timeouts: { initialTimeout: '3600s', expiresAt: new Date(now + 3600_000), onTimeout: 'delete', autoResume: false } },
+});
+
+test('lifetimeProblem accepts only the requested lifetime, action and size', () => {
+  const now = Date.parse('2026-11-26T12:00:00Z');
+  assert.equal(lifetimeProblem(goodSandbox(now), { now }), null);
+  assert.equal(lifetimeProblem({ ...goodSandbox(now), effectiveFeatures: { ...goodSandbox(now).effectiveFeatures, timeouts: { ...goodSandbox(now).effectiveFeatures.timeouts, expiresAt: new Date(now + 3600_000).toISOString() } } }, { now }), null);
+  const bad = [
+    s => { delete s.effectiveFeatures.timeouts; },
+    s => { s.effectiveFeatures.timeouts.onTimeout = 'stop'; },
+    s => { s.effectiveFeatures.timeouts.autoResume = true; },
+    s => { s.effectiveFeatures.lifecycle.autoResume = true; },
+    s => { s.effectiveFeatures.timeouts.initialTimeout = '7200s'; },
+    s => { s.effectiveFeatures.timeouts.initialTimeout = undefined; },
+    s => { s.effectiveFeatures.timeouts.expiresAt = undefined; },
+    s => { s.effectiveFeatures.timeouts.expiresAt = new Date(now + 3600_000 + 121_000); },
+    s => { s.core.resources = { cpus: 4, memoryMib: '8192' }; },
+    s => { delete s.core; },
+  ];
+  for (const [i, mutate] of bad.entries()) {
+    const s = goodSandbox(now);
+    mutate(s);
+    assert.equal(typeof lifetimeProblem(s, { now }), 'string', `mutation ${i} must be refused`);
+  }
+  assert.match(lifetimeProblem(goodSandbox(now), { now, latestExpiryMs: now + 60_000 }), /reserved window/);
+});
+
+test('a sandbox whose effective lifetime differs is deleted before repository code runs', async () => {
+  const docker = fakeDocker();
+  const launches = [];
+  const launch = docker.client.kits.launch;
+  docker.client.kits.launch = async (kit, input, options) => {
+    launches.push({ input, options });
+    const sandbox = await launch(kit, input);
+    sandbox.effectiveFeatures.timeouts.onTimeout = 'stop';
+    return sandbox;
+  };
+  const { runner } = await setup({ docker });
+  const { spec, plan } = prep('test', []);
+  const job = jobFor();
+  await runner.execute(job, spec, plan);
+  assert.equal(job.status, 'error');
+  assert.match(job.error, /lifetime check failed \(timeout action is not delete\); repository code was not run/);
+  assert.equal(docker.log.runs.length, 0);
+  assert.equal(docker.log.sandboxDeleted, 1);
+  assert.equal(job.cleanup, 'deleted');
+  assert.deepEqual(launches[0].input.lifecycle, { timeoutMs: 3_600_000, onTimeout: 'delete', autoResume: false });
+  assert.deepEqual(launches[0].options, { timeoutMs: 120_000, maxRetries: 0 });
+  assert.deepEqual(launchRequest(['secrets/a']).storage, { secrets: ['secrets/a'] });
+  assert.equal(Object.isFrozen(LAUNCH_OPTIONS), true);
 });
 
 test('startup purge deletes only old bridge-* stored secrets, never another instance\'s in-flight ones', async () => {
