@@ -1,0 +1,21 @@
+{
+  "e2p": {
+    "repo": "https://gitlab.com/proxies-ai/e2p.git",
+    "auth": { "tokenEnv": "E2P_GITLAB_READ_TOKEN" },
+    "status": { "provider": "gitlab", "tokenEnv": "E2P_GITLAB_STATUS_TOKEN" },
+    "tasks": {
+      "verify": {
+        "script": "sh tooling/ci/jobs/verify.sh",
+        "artifacts": ["ci-artifacts/verify-provenance.json"]
+      },
+      "desktop-frontend": {
+        "script": "sh tooling/ci/jobs/desktop-frontend.sh",
+        "artifacts": ["ci-artifacts/desktop-dist.tar.gz"]
+      },
+      "web-build": {
+        "script": "sh tooling/ci/jobs/web-build.sh",
+        "artifacts": ["web-preview.tar.gz"]
+      }
+    }
+  }
+}

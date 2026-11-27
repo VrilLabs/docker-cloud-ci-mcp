@@ -142,6 +142,8 @@ A task may still be a plain string (the script), exactly as before.
 
 Config is validated at startup and the bridge refuses to start with a message listing every problem. In `MOCK_DOCKER=1` mode nothing is posted to forges.
 
+`projects.e2p.example.json` is an offline allowlist template for the E2P custom-executor tasks. It is not the active `projects.json` or a live deployment change. It declares the shared `verify`, `desktop-frontend` and `web-build` entrypoints, a read-only GitLab clone credential, a separate bridge-side GitLab status credential, and no forwarded environment variables.
+
 ## Budget guard
 
 Real builds are admitted only through a fail-closed reservation guard. Without `BUDGET_JSON`, or with anything below unresolved, `start_build` refuses real builds; `MOCK_DOCKER=1` never touches the guard.
