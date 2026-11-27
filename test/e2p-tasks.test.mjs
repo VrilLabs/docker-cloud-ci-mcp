@@ -9,7 +9,7 @@ const project = config.e2p;
 const commit = 'a'.repeat(40);
 
 test('E2P sample allowlist validates and has only the three approved tasks', () => {
-  assert.equal(validateConfig(config), undefined);
+  assert.equal(validateConfig(config, {}), undefined);
   assert.deepEqual(Object.keys(project.tasks), ['verify', 'desktop-frontend', 'web-build']);
   assert.deepEqual(project.auth, { tokenEnv: 'E2P_GITLAB_READ_TOKEN' });
   assert.deepEqual(project.status, { provider: 'gitlab', tokenEnv: 'E2P_GITLAB_STATUS_TOKEN' });
